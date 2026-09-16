@@ -1,117 +1,118 @@
-# Flux-2 Klein Image Processing Pipeline for Feature Isolation
+# FLUX.2 Klein Production Image Standardization Pipeline
 
-A lightweight image-processing pipeline for isolating **basic visual structure** while suppressing non-essential surface details such as **textile texture, color, logos, and branding artifacts**.
+A lightweight, production-ready image-processing pipeline designed to standardize massive product image datasets (~6GB+) by isolating basic visual structures and suppressing non-essential surface details (e.g., textile texture, complex backgrounds, reflections, or logos).
 
-## Overview
+Powered by **FLUX.2-klein-4B** via Hugging Face `diffusers` and optimized for High-Performance Computing (HPC) clusters.
 
-This project explores preprocessing techniques that reduce image complexity to core features (shape, edges, tonal structure) so downstream tasks can focus on fundamental form rather than style-specific or material-specific noise.
+## 📖 Overview & Objective
 
-Typical use cases include:
-
-- Feature extraction for classical computer vision
-- Input normalization before model training/inference
-- Removing visual confounders (fabric weave, print, logos)
-- Building invariant representations of objects
-
-## Objective
+This project explores preprocessing techniques that reduce image complexity to core features (shape, edges, tonal structure) so downstream computer vision tasks can focus on fundamental form rather than style-specific or material-specific noise.
 
 Given input images that may contain distracting surface properties, this pipeline aims to:
-
-1. **Remove or suppress texture**
+1. **Remove or suppress texture** (high-frequency attenuation)
 2. **Minimize color dependence**
 3. **Reduce logo/print interference**
 4. **Preserve structural cues** (silhouette, boundaries, major regions)
 
-The output should retain essential geometric and intensity-driven information while discarding stylistic details.
+## 🚀 Key Features
 
-## Repository Structure
+* **Multi-GPU Data Parallelism:** Natively scales across available GPUs (e.g., 4x H100) using `torch.multiprocessing`, drastically reducing inference time for large datasets.
+* **HPC & SLURM Ready:** Includes a robust `.sh` batch script optimized for SLURM workload managers, with memory fragmentation mitigations (`expandable_segments:True`).
+* **Direct ZIP Ingestion:** Capable of extracting and processing images directly from `.zip` archives (preventing filesystem strain on shared network drives) and re-compressing the standardized outputs.
+* **Resumable Checkpointing:** Automatically detects existing valid outputs and skips them, allowing safe interruption and resumption of long-running jobs.
+
+## 🧠 The Structural Prompt
+
+The pipeline utilizes an `AutoPipelineForImage2Image` to transform input images based on a highly specific structural prompt designed to neutralize stylistic variance:
+
+> *"CAD-style monochrome render of the exact object isolated on a pure flat white background, zero drop shadows, no floor shadow. Clean uniform matte light-grey surface, zero surface texture, zero patterns, zero logos, zero text, zero color. no mannequin, no display stand or shelf, only the original object. High geometric accuracy, sharp structural seams, clipping path isolated"*
+
+## 📁 Repository Structure
 
 ```text
 .
 ├── data/
-│   ├── raw/                   # Input images
-│   ├── interim/               # Intermediate outputs
-│   └── processed/             # Final isolated-feature outputs
-├── processed_examples/        # Examples of outputs by each model
-│   ├── flux1+controlnet_sample.zip
-│   ├── flux2_sample.zip
-│   └── flux2klein_sample.zip
-├── samples/                   # Sample Input Images
-├── src/                       # Alternative pipelines for other models
-│   ├── flux1_controlnet.py    # Alternative classical flux1 + controlnet pipeline
-│   └── flux2.py               # Alternative FLUX.2 Image Standardization Pipeline
-├── requirements.txt
+│   ├── artikelnummer_to_image.csv   # Optional: Metadata mapping
+│   └── raw_archives/                # Input zip files
+├── images/                          # Extracted/Input raw images
+├── images_standardized/             # Output directory for processed images
+├── processed_examples/              # Examples of outputs (before/after)
+├── samples/                         # Small subset for quick testing
+├── src/                             # Alternative pipelines
+│   ├── flux1_controlnet.py          # Classical flux1 + controlnet approach
+│   └── flux2.py                     # Standard FLUX.2 approach
+├── main.py                          # Core Python pipeline (Multi-GPU enabled)
+├── run_flux2klein.sh                # SLURM batch script for HPC deployment
+├── requirements.txt                 # Python dependencies
 └── README.md
 ```
 
-## Installation
+## ⚙️ Installation
 
-### 1) Clone repository
-
+### 1. Clone the repository
 ```bash
 git clone https://github.com/JosephLWW/Flux-2-Klein-Image-Processing-Pipeline-for-Feature-Isolation.git
 cd Flux-2-Klein-Image-Processing-Pipeline-for-Feature-Isolation
 ```
 
-### 2) Create environment
-
+### 2. Set up the Environment (Local or HPC)
 ```bash
 python -m venv .venv
-source .venv/bin/activate       # macOS/Linux
-# .venv\Scripts\activate        # Windows PowerShell
-```
-
-### 3) Install dependencies
-
-```bash
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Quick Start
+### 3. Hugging Face Authentication
+The pipeline requires access to the gated `black-forest-labs/FLUX.2-klein-4B` model.
+1. Create a file named `token.txt` in the root directory containing your HF token.
+2. Alternatively, export it as an environment variable: `export HF_TOKEN="your_token_here"`.
 
-### Notebook workflow
+## 🖥️ Usage
 
-Open the notebook(s) and run step-by-step pre-processing:
+### Local Execution (Single/Multi GPU)
 
+**Process all images from a zip file (Default Behavior):**
+By default, the script looks for `images.zip`, extracts valid images, processes them, and outputs `images_standardized.zip`.
 ```bash
-jupyter lab
+python main.py --process-all-zip
 ```
 
-### Script workflow
-
+**Process a local folder directly (No ZIP extraction):**
+Useful if your images are already extracted in the `images/` directory.
 ```bash
-python -m main.py
+python main.py --skip-zip
 ```
 
-## Evaluation Ideas
+**Quick Test (Process only 5 samples):**
+```bash
+python main.py --samples-only --max-samples 5
+```
 
-To assess pipeline quality, consider:
+### HPC Cluster Execution (SLURM)
 
-- **Edge retention score** (how much meaningful contour remains)
-- **Texture suppression ratio** (high-frequency attenuation)
-- **Logo artifact reduction** (manual/automatic scoring)
-- **Downstream task impact** (e.g., classification robustness)
+To run the pipeline on an HPC cluster, edit the paths in `run_flux2klein.sh` to match your environment, then submit the job:
+```bash
+sbatch run_flux2klein.sh
+```
+Check the generated `flux_test_<JobID>.log` and `flux_test_<JobID>.err` files for progress and debugging.
 
-## Roadmap
+## 📊 Evaluation & Roadmap
 
-- [ ] Add reproducible benchmark dataset
-- [ ] Add parameter sweep scripts
-- [ ] Add objective quality metrics
-- [ ] Add before/after report generation
-- [ ] Package as installable module (`pip install -e .`)
+To assess pipeline quality in downstream tasks, we are evaluating:
+- **Edge retention score:** How much meaningful contour remains.
+- **Texture suppression ratio:** High-frequency attenuation.
+- **Logo artifact reduction:** Manual/automatic scoring.
 
-## Contributing
+**Upcoming Features:**
+- [ ] Add reproducible benchmark dataset.
+- [ ] Add parameter sweep scripts.
+- [ ] Package as installable module (`pip install -e .`).
 
-Contributions are welcome. Suggested process:
+## 🤝 Contributing
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/JosephLWW/Flux-2-Klein-Image-Processing-Pipeline-for-Feature-Isolation/issues).
 
-1. Fork the repo
-2. Create a feature branch
-3. Add or improve pipeline components
-4. Include visual before/after examples
-5. Open a pull request
-Specify your project license here (e.g., MIT, Apache-2.0, proprietary).
-
-## Acknowledgments
-
-- OpenCV / scikit-image / NumPy ecosystem
-- Research and engineering work on structure-focused visual preprocessing
+## 📄 License & Acknowledgments
+* Developed by [Joseph Wan](https://github.com/JosephLWW) (2026).
+* Distributed under the MIT License.
+* Powered by [Black Forest Labs FLUX.2](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) and the Hugging Face `diffusers` ecosystem.
