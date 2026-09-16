@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=flux_2_std
+#SBATCH --job-name=flux_2klein_std
 #SBATCH --partition=gpu_h100            # Cola GPU H100 principal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -7,7 +7,8 @@
 #SBATCH --mem=760000mb                  # Memoria máxima del nodo H100
 #SBATCH --gres=gpu:4                    # 4 GPUs H100 en el mismo nodo
 #SBATCH --time=72:00:00                 # Tiempo máximo asignado al job (72 horas)
-#SBATCH --output=flux_2_%j.log          # Archivo de salida de logs
+#SBATCH --output=flux_test_%j.log
+#SBATCH --error=flux_test_%j.err
 
 # ==============================================================================
 # FLUX ControlNet (Canny) Product Image Standardization — SLURM Job Script
@@ -16,12 +17,12 @@
 # Limpiar rutas de Python heredadas del entorno del usuario
 unset PYTHONPATH
 
-# 1. Cargar CUDA 12.8 y Python
-module load devel/cuda/12.8
+# 1. Cargar CUDA 12.4 y Python
+module load devel/cuda/12.4
 module load devel/python/3.12.3-gnu-14.2
 
 # 2. Variables del proyecto
-WORKDIR=/pfs/data6/home/tu/tu_tu/tu_zxoxe46/austria_data
+WORKDIR=/pfs/data6/home/tu/tu_tu/tu_zxoxe46/Hiwi/austria_data
 VENV=${WORKDIR}/.venv
 
 # 3. Moverse al directorio del proyecto
@@ -30,10 +31,18 @@ cd ${WORKDIR}
 # 4. Activar el entorno virtual
 if [ ! -d "${VENV}" ]; then
     echo "Creando entorno virtual en ${VENV}..."
-    python3 -m venv ${VENV}
+    python3.12 -m venv ${VENV}
 fi
 
 source ${VENV}/bin/activate
+
+# Add CUDA and PyTorch-shipped cudnn lib paths
+export LD_LIBRARY_PATH=/opt/bwhpc/common/devel/cuda/12.4/lib64:${WORKDIR}/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+export CUDNN_PATH=${WORKDIR}/.venv/lib/python3.12/site-packages/nvidia/cudnn
+echo "LD_LIBRARY_PATH is: $LD_LIBRARY_PATH"
+
+export LD_LIBRARY_PATH=/opt/bwhpc/common/devel/cuda/12.4/lib64:$LD_LIBRARY_PATH
+
 
 # Verificación e instalación silenciosa de dependencias
 echo "Verificando dependencias en ${VENV}..."
@@ -46,7 +55,7 @@ echo "Job ID:            $SLURM_JOB_ID"
 echo "Node:              $SLURMD_NODENAME"
 echo "Python location:   $(which python)"
 echo "Python version:    $(python --version)"
-echo "Torch CUDA:        $(python -c 'import torch; print(f\"GPUs disponibles: {torch.cuda.device_count()}\")')"
+echo "Torch CUDA:        $(python -c 'import torch; print(f"GPUs disponibles: {torch.cuda.device_count()}")')"
 echo "============================================================"
 
 # 5. Optimización de memoria VRAM de PyTorch para evitar fragmentación
@@ -73,9 +82,10 @@ elif [ "$RUN_MODE" = "samples_all" ]; then
         --samples-only
 
 elif [ "$RUN_MODE" = "full" ]; then
-    echo "MODO: Producción -> Dataset completo (~107k imágenes)"
+    echo "MODO: Producción -> Todas las imágenes de la carpeta images/"
     python main.py \
-        --data-dir .
+        --data-dir . \
+        --skip-zip
 fi
 
 echo "============================================================"
