@@ -3,6 +3,10 @@
 ===============================================================================
 FLUX.2 Klein Production Image Standardization Pipeline (Native Image Editing)
 ===============================================================================
+Author: Joseph Wan
+Year: 2026
+Repository: https://github.com/JosephLWW/Flux-2-Klein-Image-Processing-Pipeline-for-Feature-Isolation/
+===============================================================================
 Description:
     Production-ready pipeline using Hugging Face `diffusers` and PyTorch
     to standardize product images (~6GB dataset) using FLUX.2-klein.
@@ -17,6 +21,8 @@ Description:
 
 import os
 import sys
+import zipfile
+import shutil
 
 # Configuración de asignación de memoria para evitar fragmentación en PyTorch CUDA
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -54,6 +60,12 @@ def setup_huggingface_auth(token: Optional[str] = None) -> bool:
     if not HF_HUB_AVAILABLE:
         print("Warning: huggingface_hub not available. Skipping authentication.")
         return False
+
+    token_file = Path("token.txt")
+    if not token and token_file.exists():
+        with open(token_file, "r") as f:
+            token = f.read().strip()
+        os.environ["HF_TOKEN"] = token
 
     resolved_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
@@ -368,6 +380,7 @@ def worker_process(rank: int, chunks: List[List[dict]], args, base_dir_str: str)
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(description="FLUX.2 Klein Image Standardization")
+    parser.add_argument("--hf-token", type=str, default=None, help="HuggingFace token for authentication.")
     parser.add_argument("--data-dir", type=str, default=".", help="Base working directory")
     parser.add_argument("--input-dir", type=str, default=None, help="Custom input images directory")
     parser.add_argument("--model-id", type=str, default="black-forest-labs/FLUX.2-klein-4B")
@@ -376,7 +389,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--samples-only", action="store_true")
-    parser.add_argument("--hf-token", type=str, default=None)
+    parser.add_argument("--skip-zip", action="store_true", help="Omitir el procesamiento de archivos ZIP y usar carpetas directamente.")
+    parser.add_argument("--zip-file", type=str, default="images.zip", help="Nombre del archivo zip de entrada.")
+    parser.add_argument("--output-zip", type=str, default="images_standardized.zip", help="Nombre del archivo zip de salida final.")
+    parser.add_argument("--process-all-zip", action="store_true", help="Procesar todas las imágenes del ZIP ignorando el CSV.")
 
     args = parser.parse_args()
     base_dir = Path(args.data_dir)
@@ -389,19 +405,77 @@ def main():
 
     setup_huggingface_auth(token=args.hf_token)
 
-    # 1. Load Metadata (Main Process)
-    preprocessor = DataPreprocessor(base_dir=base_dir, logger=logging.getLogger("Init"))
-    try:
-        merged_metadata = preprocessor.load_and_merge_metadata()
-        if args.samples_only:
-            merged_metadata = preprocessor.filter_existing_local_samples(merged_metadata)
-            if args.input_dir is None:
-                args.input_dir = "samples"
-    except Exception as e:
-        print(f"\n[ERROR] Preprocessing failed: {e}")
-        sys.exit(1)
+    # 1. Load Metadata or Extract/Read All Zip Images
+    # Modo folder-first: si no se pide zip, miramos la carpeta 'images' directamente.
+    use_zip = not args.skip_zip
+    
+    zip_path = base_dir / args.zip_file if not Path(args.zip_file).is_absolute() else Path(args.zip_file)
+    extracted_images_dir = base_dir / "images"
+    
+    if (use_zip and (args.process_all_zip or not (base_dir / "data/artikelnummer_to_image.csv").exists())) or args.skip_zip:
+        if args.skip_zip:
+            print("[+] Modo skip-zip: Buscando imágenes directamente en la carpeta 'images'...")
+            if not extracted_images_dir.exists():
+                print(f"[ERROR] La carpeta {extracted_images_dir} no existe.")
+                sys.exit(1)
+            valid_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+            all_files = [f.name for f in extracted_images_dir.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
+            records = [{"image_name": filename} for filename in sorted(all_files)]
+            print(f"[+] Se detectaron {len(records)} imágenes en la carpeta para procesar.")
+        
+        elif zip_path.exists():
+            print(f"\n[+] Extrayendo todas las imágenes de {zip_path} a {extracted_images_dir}...")
+            # ... (rest of the extraction logic)
+            extracted_images_dir.mkdir(parents=True, exist_ok=True)
+            valid_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+            extracted = skipped = 0
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                for member in zip_ref.infolist():
+                    if member.is_dir():
+                        continue
+                    # Quitar prefijo de primer nivel (ej. 'images/xxx.jpg' -> 'xxx.jpg').
+                    # El zip trae todo bajo 'images/', y si hacemos extractall a
+                    # 'images/' crearíamos 'images/images/'. Por eso aplanamos a basename.
+                    raw_name = member.filename
+                    clean_name = Path(raw_name).name
+                    if not clean_name or Path(clean_name).suffix.lower() not in valid_exts:
+                        continue
+                    # Defensa contra zip-slip
+                    target = extracted_images_dir / clean_name
+                    try:
+                        target.resolve().relative_to(extracted_images_dir.resolve())
+                    except ValueError:
+                        continue
+                    if target.exists() and target.stat().st_size > 0:
+                        skipped += 1
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zip_ref.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted += 1
+            print(f"[+] Extracción completa: {extracted} nuevas, {skipped} ya existían.")
 
-    records = merged_metadata.to_dict("records")
+            # Obtener todas las imágenes válidas extraídas (plano, sin subcarpetas)
+            all_files = [f.name for f in extracted_images_dir.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
+            records = [{"image_name": filename} for filename in sorted(all_files)]
+            print(f"[+] Se detectaron {len(records)} imágenes en el ZIP para procesar.")
+        else:
+            print(f"\n[ERROR] No se encontró el archivo ZIP en {zip_path}")
+            sys.exit(1)
+    else:
+        preprocessor = DataPreprocessor(base_dir=base_dir, logger=logging.getLogger("Init"))
+        try:
+            merged_metadata = preprocessor.load_and_merge_metadata()
+            if args.samples_only:
+                merged_metadata = preprocessor.filter_existing_local_samples(merged_metadata)
+                if args.input_dir is None:
+                    args.input_dir = "samples"
+        except Exception as e:
+            print(f"\n[ERROR] Preprocessing failed: {e}")
+            sys.exit(1)
+
+        records = merged_metadata.to_dict("records")
+
     if args.max_samples:
         records = records[:args.max_samples]
 
@@ -438,6 +512,16 @@ def main():
     print("\n===============================================================================")
     print("PIPELINE EXECUTION COMPLETED")
     print("===============================================================================\n")
+
+    # Compresión final de las imágenes estandarizadas
+    output_dir = base_dir / "images_standardized"
+    output_zip_path = base_dir / args.output_zip
+    if not args.skip_zip and output_dir.exists() and any(output_dir.iterdir()):
+        print(f"[+] Comprimiendo el directorio {output_dir} en {output_zip_path}...")
+        shutil.make_archive(str(output_zip_path.with_suffix('')), 'zip', output_dir)
+        print(f"[+] Compresión completada: {output_zip_path}")
+    else:
+        print(f"[+] Imágenes estandarizadas guardadas en: {output_dir}")
 
 
 if __name__ == "__main__":
